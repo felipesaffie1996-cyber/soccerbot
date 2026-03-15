@@ -45,8 +45,7 @@ def _score_line(fixture: dict) -> str:
     short = status.get("short", "")
     elapsed = status.get("elapsed")
     score = f"{h_goals} - {a_goals}" if h_goals is not None and a_goals is not None else "vs"
-    status_str = _status_label(short, elapsed)
-    return f"*{home}* {score} *{away}* | {status_str}"
+    return f"*{home}* {score} *{away}* | {_status_label(short, elapsed)}"
 
 
 def _truncate(text: str) -> str:
@@ -83,8 +82,7 @@ class ResponseBuilder:
             country = f.get("league", {}).get("country", "")
             key = f"{league_name} ({country})" if country else league_name
             by_league.setdefault(key, []).append(f)
-        total = len(fixtures)
-        header = f"📅 *Partidos de hoy* — {total} en {len(by_league)} competición(es)\n\n"
+        header = f"📅 *Partidos de hoy* — {len(fixtures)} en {len(by_league)} competición(es)\n\n"
         lines = []
         for league_name, matches in sorted(by_league.items()):
             lines.append(f"🏆 *{league_name}*")
@@ -98,9 +96,7 @@ class ResponseBuilder:
                 h_g = goals.get("home")
                 a_g = goals.get("away")
                 if h_g is not None and a_g is not None and short not in ("NS", "TBD", "PST"):
-                    score = f"{h_g}-{a_g}"
-                    st = _status_label(short, elapsed)
-                    lines.append(f"  • {home} {score} {away} | {st}")
+                    lines.append(f"  • {home} {h_g}-{a_g} {away} | {_status_label(short, elapsed)}")
                 else:
                     ts = f["fixture"].get("timestamp")
                     time_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%H:%M UTC") if ts else "?"
@@ -115,12 +111,10 @@ class ResponseBuilder:
         h_g = goals.get("home", 0)
         a_g = goals.get("away", 0)
         status = fixture["fixture"]["status"]
-        short = status.get("short", "")
-        elapsed = status.get("elapsed")
         league = fixture.get("league", {})
         lines = [
             f"⚽ *{home} {h_g} - {a_g} {away}*",
-            f"🏆 {league.get('name', '')} | {_status_label(short, elapsed)}",
+            f"🏆 {league.get('name', '')} | {_status_label(status.get('short', ''), status.get('elapsed'))}",
             "",
         ]
         if events:
@@ -162,8 +156,7 @@ class ResponseBuilder:
             for lineup in lineups:
                 t_name = lineup.get("team", {}).get("name", "")
                 formation = lineup.get("formation", "")
-                xi = lineup.get("startXI", [])
-                players = [p["player"]["name"] for p in xi if p.get("player")]
+                players = [p["player"]["name"] for p in lineup.get("startXI", []) if p.get("player")]
                 lines.append(f"  *{t_name}* ({formation}): {', '.join(players)}")
             lines.append("")
         return _truncate("\n".join(lines))
@@ -190,8 +183,7 @@ class ResponseBuilder:
                 played = entry.get("all", {}).get("played", 0)
                 gd = entry.get("goalsDiff", 0)
                 gd_str = f"+{gd}" if gd > 0 else str(gd)
-                team_display = team[:20].ljust(20)
-                lines.append(f"`{str(pos).rjust(2)}   {team_display}  {str(pts).rjust(3)}   {str(played).rjust(2)}  {gd_str.rjust(4)}`")
+                lines.append(f"`{str(pos).rjust(2)}   {team[:20].ljust(20)}  {str(pts).rjust(3)}   {str(played).rjust(2)}  {gd_str.rjust(4)}`")
             lines.append("")
         lines.append("_G=Ganados D=Empates P=Perdidos_")
         return _truncate("\n".join(lines))
@@ -203,8 +195,7 @@ class ResponseBuilder:
         lines.append("`Pos  Jugador              Club              Goles  Asist`")
         for i, entry in enumerate(scorers[:15], 1):
             player = entry.get("player", {})
-            stats_list = entry.get("statistics", [{}])
-            stat = stats_list[0] if stats_list else {}
+            stat = entry.get("statistics", [{}])[0]
             name = player.get("name", "?")[:20].ljust(20)
             club = stat.get("team", {}).get("name", "?")[:16].ljust(16)
             goals = stat.get("goals", {}).get("total", 0) or 0
@@ -214,44 +205,22 @@ class ResponseBuilder:
 
     def build_late_goals(self, results: list, league_name: str, round_number: int) -> str:
         if not results:
-            return (
-                f"❌ No encontré partidos para la *Jornada {round_number}* de *{league_name}*.\n\n"
-                f"Verifica que la jornada ya se haya jugado y que el nombre de la liga sea correcto."
-            )
-        total_late_goals = 0
-        matches_with_late = 0
-        lines = [
-            f"⏱ *Goles en tiempo adicional (90+)*",
-            f"🏆 {league_name} — Jornada {round_number}\n",
-        ]
+            return f"❌ No encontré partidos para la *Jornada {round_number}* de *{league_name}*."
+        total_late = sum(len(r["late_goals"]) for r in results)
+        matches_with = sum(1 for r in results if r["late_goals"])
+        lines = [f"⏱ *Goles en tiempo adicional (90+)*", f"🏆 {league_name} — Jornada {round_number}\n"]
         for item in results:
-            home = item["home"]
-            away = item["away"]
-            score_h = item["score_home"]
-            score_a = item["score_away"]
-            late_goals = item["late_goals"]
-            status = item["status"]
-            match_line = f"*{home} {score_h}-{score_a} {away}* ({status})"
-            if late_goals:
-                matches_with_late += 1
-                total_late_goals += len(late_goals)
+            match_line = f"*{item['home']} {item['score_home']}-{item['score_away']} {item['away']}* ({item['status']})"
+            if item["late_goals"]:
                 lines.append(f"⚽ {match_line}")
-                for g in late_goals:
-                    minute = g["minute"]
-                    extra = g.get("extra")
-                    min_str = f"90+{extra}'" if extra else f"{minute}'"
-                    scorer = g["scorer"]
-                    team = g["team"]
-                    goal_type = g.get("type", "")
-                    type_str = " 🎯 (pen)" if "Penalty" in goal_type else ""
-                    lines.append(f"    ⚽ {min_str} {scorer} ({team}){type_str}")
+                for g in item["late_goals"]:
+                    min_str = f"90+{g['extra']}'" if g.get("extra") else f"{g['minute']}'"
+                    type_str = " 🎯 (pen)" if "Penalty" in g.get("type", "") else ""
+                    lines.append(f"    ⚽ {min_str} {g['scorer']} ({g['team']}){type_str}")
             else:
                 lines.append(f"➖ {match_line} — sin goles en 90+")
         lines.append("")
-        lines.append(
-            f"📊 *Resumen:* {total_late_goals} gol(es) en tiempo adicional "
-            f"en {matches_with_late} de {len(results)} partido(s)"
-        )
+        lines.append(f"📊 *Resumen:* {total_late} gol(es) en 90+ en {matches_with} de {len(results)} partido(s)")
         return _truncate("\n".join(lines))
 
     def build_late_goals_no_round(self, league_name: str, available_rounds: list) -> str:
@@ -263,3 +232,154 @@ class ResponseBuilder:
                 lines.append(f"  • {r}")
             lines.append("\nEjemplo: `goles sobre el final jornada 7 Primera División Chile`")
         return "\n".join(lines)
+
+    def build_team_results(self, fixtures: list, team_name: str) -> str:
+        if not fixtures:
+            return f"❌ No encontré resultados para *{team_name}*."
+        lines = [f"📋 *Últimos resultados — {team_name}*\n"]
+        wins = draws = losses = goals_for = goals_against = 0
+        unbeaten_streak = 0
+        last_loss_date = None
+        for f in reversed(fixtures):
+            status = f["fixture"]["status"]["short"]
+            if status not in ("FT", "AET", "PEN"):
+                continue
+            home_team = f["teams"]["home"]["name"]
+            away_team = f["teams"]["away"]["name"]
+            h_g = f.get("goals", {}).get("home", 0) or 0
+            a_g = f.get("goals", {}).get("away", 0) or 0
+            is_home = team_name.lower() in home_team.lower()
+            my_goals = h_g if is_home else a_g
+            opp_goals = a_g if is_home else h_g
+            opp_name = away_team if is_home else home_team
+            goals_for += my_goals
+            goals_against += opp_goals
+            date = f["fixture"].get("date", "")[:10]
+            league = f.get("league", {}).get("name", "")
+            if my_goals > opp_goals:
+                result = "✅ V"
+                wins += 1
+            elif my_goals == opp_goals:
+                result = "➖ E"
+                draws += 1
+            else:
+                result = "❌ D"
+                losses += 1
+                last_loss_date = date
+            venue = "🏠" if is_home else "✈️"
+            lines.append(f"{venue} {result} {my_goals}-{opp_goals} vs *{opp_name}* | {date} | _{league}_")
+
+        total = wins + draws + losses
+        lines.append("")
+        lines.append(f"📊 *Resumen ({total} partidos):* {wins}V {draws}E {losses}D")
+        lines.append(f"⚽ Goles: {goals_for} a favor, {goals_against} en contra")
+        if last_loss_date:
+            lines.append(f"📅 Última derrota: {last_loss_date}")
+        else:
+            lines.append(f"🔥 ¡Sin derrotas en los últimos {total} partidos!")
+        return _truncate("\n".join(lines))
+
+    def build_next_fixtures(self, fixtures: list, team_or_league: str) -> str:
+        if not fixtures:
+            return f"❌ No encontré próximos partidos para *{team_or_league}*."
+        lines = [f"📅 *Próximos partidos — {team_or_league}*\n"]
+        for f in fixtures:
+            home = f["teams"]["home"]["name"]
+            away = f["teams"]["away"]["name"]
+            ts = f["fixture"].get("timestamp")
+            date_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d/%m %H:%M UTC") if ts else "?"
+            league = f.get("league", {}).get("name", "")
+            round_info = f.get("league", {}).get("round", "")
+            lines.append(f"• *{home}* vs *{away}*")
+            lines.append(f"  📅 {date_str} | 🏆 {league} | {round_info}")
+            lines.append("")
+        return _truncate("\n".join(lines))
+
+    def build_head_to_head(self, fixtures: list, team1: str, team2: str) -> str:
+        if not fixtures:
+            return f"❌ No encontré historial entre *{team1}* y *{team2}*."
+        lines = [f"⚔️ *Head to Head — {team1} vs {team2}*\n"]
+        t1_wins = t2_wins = draws = 0
+        for f in fixtures:
+            status = f["fixture"]["status"]["short"]
+            if status not in ("FT", "AET", "PEN"):
+                continue
+            home = f["teams"]["home"]["name"]
+            away = f["teams"]["away"]["name"]
+            h_g = f.get("goals", {}).get("home", 0) or 0
+            a_g = f.get("goals", {}).get("away", 0) or 0
+            date = f["fixture"].get("date", "")[:10]
+            league = f.get("league", {}).get("name", "")
+            if h_g > a_g:
+                result = f"✅ {home}"
+                if team1.lower() in home.lower():
+                    t1_wins += 1
+                else:
+                    t2_wins += 1
+            elif h_g < a_g:
+                result = f"✅ {away}"
+                if team1.lower() in away.lower():
+                    t1_wins += 1
+                else:
+                    t2_wins += 1
+            else:
+                result = "➖ Empate"
+                draws += 1
+            lines.append(f"• *{home}* {h_g}-{a_g} *{away}* | {result}")
+            lines.append(f"  📅 {date} | _{league}_")
+            lines.append("")
+        lines.append(f"📊 *Balance:* {team1}: {t1_wins}V | Empates: {draws} | {team2}: {t2_wins}V")
+        return _truncate("\n".join(lines))
+
+    def build_round_goals_summary(self, summary: dict, league_name: str) -> str:
+        if not summary or summary.get("played", 0) == 0:
+            return f"❌ No hay datos de goles para esa jornada de *{league_name}*."
+        r = summary["round"]
+        played = summary["played"]
+        total = summary["total_goals"]
+        avg = summary["avg_goals"]
+        btts = summary["btts"]
+        btts_pct = summary["btts_pct"]
+        lines = [
+            f"📊 *Resumen de goles — {league_name} Jornada {r}*\n",
+            f"✅ Partidos jugados: {played}",
+            f"⚽ Total goles: {total}",
+            f"📈 Promedio por partido: {avg}",
+            f"🎯 BTTS (ambos anotan): {btts}/{played} ({btts_pct}%)",
+            "",
+            "*Resultados:*",
+        ]
+        for m in summary["matches"]:
+            btts_icon = "✅" if m["btts"] else "❌"
+            lines.append(f"  {btts_icon} *{m['home']}* {m['score_h']}-{m['score_a']} *{m['away']}*")
+        return _truncate("\n".join(lines))
+
+    def build_multi_round_summary(self, summaries: list, league_name: str) -> str:
+        if not summaries:
+            return f"❌ No hay datos para *{league_name}*."
+        lines = [f"📊 *Resumen histórico — {league_name}*\n"]
+        lines.append("`Jorn  PJ  Goles  Avg  BTTS%`")
+        total_goals = 0
+        total_played = 0
+        total_btts = 0
+        for s in summaries:
+            if s.get("played", 0) == 0:
+                continue
+            total_goals += s["total_goals"]
+            total_played += s["played"]
+            total_btts += s["btts"]
+            lines.append(
+                f"`{str(s['round']).rjust(4)}  "
+                f"{str(s['played']).rjust(2)}  "
+                f"{str(s['total_goals']).rjust(5)}  "
+                f"{str(s['avg_goals']).rjust(4)}  "
+                f"{str(s['btts_pct']).rjust(4)}%`"
+            )
+        if total_played > 0:
+            overall_avg = round(total_goals / total_played, 2)
+            overall_btts = round(total_btts / total_played * 100)
+            lines.append("")
+            lines.append(f"*Total:* {total_goals} goles en {total_played} partidos")
+            lines.append(f"*Promedio global:* {overall_avg} goles/partido")
+            lines.append(f"*BTTS global:* {overall_btts}%")
+        return _truncate("\n".join(lines))
