@@ -58,7 +58,7 @@ Intenciones posibles:
 - team_next: próximos partidos de un equipo. Requiere: team (string). Opcional: n (int, default 5).
 - league_next: próximos partidos de una liga. Requiere: league (string). Opcional: n (int, default 10).
 - head_to_head: historial entre dos equipos. Requiere: team1, team2. Opcional: n (int, default 10).
-- round_goals: total goles y BTTS de una o varias jornadas de una liga.
+- round_goals: total goles, BTTS y desglose 1T/2T de una o varias jornadas.
   Requiere: league (string), rounds (array de ints) o rounds_count (int).
 - unknown: no se entiende.
 
@@ -68,6 +68,8 @@ Ejemplos:
 "historial Manchester City vs Liverpool" → {"type": "head_to_head", "team1": "Manchester City", "team2": "Liverpool"}
 "cuántos goles hubo en la jornada 5 de la premier" → {"type": "round_goals", "league": "Premier League", "rounds": [5]}
 "goles y btts últimas 4 jornadas bundesliga" → {"type": "round_goals", "league": "Bundesliga", "rounds_count": 4}
+"goles en el primer tiempo jornada 30 premier league" → {"type": "round_goals", "league": "Premier League", "rounds": [30]}
+"máximo goles en 1T jornada 30 premier" → {"type": "round_goals", "league": "Premier League", "rounds": [30]}
 "goles sobre el final jornada 7 chile" → {"type": "late_goals_multi", "leagues": ["Primera Division Chile"], "rounds": [7]}
 "últimas 3 fechas de goles al final en chile y holanda" → {"type": "late_goals_multi", "leagues": ["Primera Division Chile", "Eredivisie"], "rounds": null, "rounds_count": 3}
 "tabla de la premier" → {"type": "standings", "league": "Premier League"}
@@ -196,6 +198,7 @@ async def handle_late_goals_multi(intent: dict, update: Update):
 
 
 async def handle_round_goals(intent: dict, update: Update):
+    import re
     league_query = intent.get("league", "")
     rounds = intent.get("rounds")
     rounds_count = intent.get("rounds_count")
@@ -208,7 +211,6 @@ async def handle_round_goals(intent: dict, update: Update):
         return
     if not rounds and rounds_count:
         await update.message.reply_text(f"⏳ Buscando las últimas {rounds_count} jornadas de {league_query}...")
-        import re
         available = await football_api.get_available_rounds(league_id, season)
         numbered = sorted(set(
             int(m.group(1)) for r in available
@@ -218,7 +220,7 @@ async def handle_round_goals(intent: dict, update: Update):
     if not rounds:
         await update.message.reply_text("Especifica las jornadas.")
         return
-    await update.message.reply_text(f"⏳ Calculando goles y BTTS de {len(rounds)} jornada(s)...")
+    await update.message.reply_text(f"⏳ Calculando goles, BTTS y desglose 1T/2T de {len(rounds)} jornada(s)...")
     summaries = await asyncio.gather(*[
         football_api.get_round_goals_summary(league_id, season, r) for r in rounds
     ])
@@ -243,6 +245,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `Tabla de la Premier League`\n"
         "• `Goleadores Champions League`\n"
         "• `Goles y BTTS últimas 4 jornadas Bundesliga`\n"
+        "• `Goles en el primer tiempo jornada 30 Premier`\n"
         "• `Goles sobre el final jornada 7 Primera División Chile`\n"
         "• `Próximos partidos de la Champions`\n\n"
         "Datos en vivo de API-Football ✅"
@@ -411,7 +414,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif t == "team_results":
             team_name = intent.get("team", "")
             n = intent.get("n", 10)
-            await update.message.reply_text(f"⏳ Buscando equipo {team_name}...")
             team_id = await football_api.find_team(team_name)
             if not team_id:
                 text = f"❌ No encontré el equipo: *{team_name}*"
@@ -458,6 +460,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "• `¿Cuándo juega el Barcelona?`\n"
                 "• `Historial Real Madrid vs Atletico`\n"
                 "• `Goles y BTTS últimas 5 jornadas Premier`\n"
+                "• `Goles en el primer tiempo jornada 30 Premier`\n"
                 "• `Goles sobre el final jornada 7 Chile`\n"
                 "• `Tabla de La Liga`\n"
             )
