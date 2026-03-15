@@ -1,6 +1,7 @@
 import logging
 import os
 import json
+import asyncio
 import aiohttp
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
@@ -44,34 +45,33 @@ INTENT_SYSTEM_PROMPT = """Eres un extractor de intenciones para un bot de fútbo
 El usuario envía mensajes en español sobre fútbol. Tu tarea es extraer la intención y devolver SOLO un JSON válido, sin texto adicional.
 
 Intenciones posibles:
-- live_fixtures: quiere ver partidos en vivo. Puede incluir min_minute (int) si pide un minuto específico.
+- live_fixtures: quiere ver partidos en vivo. Puede incluir min_minute (int).
 - today_fixtures: quiere ver partidos de hoy. Puede incluir league (string).
 - standings: quiere tabla de posiciones. Incluir league (string).
 - top_scorers: quiere goleadores. Incluir league (string).
-- live_fixture_detail: quiere detalle de un partido en vivo. Incluir team1 y team2 (strings).
-- fixture_stats: quiere estadísticas de un partido. Incluir team1 y team2 (strings).
-- late_goals: quiere goles en tiempo adicional (90+) de una jornada. Incluir league (string) y round (int).
+- live_fixture_detail: quiere detalle de un partido en vivo. Incluir team1 y team2.
+- fixture_stats: quiere estadísticas de un partido. Incluir team1 y team2.
+- late_goals_multi: quiere goles en tiempo adicional (90+) para una o más ligas y una o más jornadas.
+  Incluir leagues (array de strings) y rounds (array de ints).
+  Si dice "últimas 3 fechas" y la liga tiene ~8 jornadas jugadas, inferir [6,7,8].
+  Si dice "última fecha" usar el número más alto razonable.
+  Si no especifica jornadas exactas pero dice "últimas N fechas", usar rounds: null y rounds_count: N.
 - unknown: no se entiende la consulta.
 
 Ejemplos:
-"qué partidos hay en vivo" → {"type": "live_fixtures"}
-"partidos en el minuto 75 o más" → {"type": "live_fixtures", "min_minute": 75}
-"cómo va el clásico, real madrid y barcelona" → {"type": "live_fixture_detail", "team1": "real madrid", "team2": "barcelona"}
+"goles sobre el final jornada 7 primera division chile" → {"type": "late_goals_multi", "leagues": ["Primera Division Chile"], "rounds": [7]}
+"cuántos goles sobre el final en chile, holanda y alemania de las últimas 3 fechas" → {"type": "late_goals_multi", "leagues": ["Primera Division Chile", "Eredivisie", "Bundesliga"], "rounds": null, "rounds_count": 3}
+"goles al final jornadas 6 7 y 8 de la premier" → {"type": "late_goals_multi", "leagues": ["Premier League"], "rounds": [6, 7, 8]}
 "tabla de la premier" → {"type": "standings", "league": "Premier League"}
-"goleadores de la champions" → {"type": "top_scorers", "league": "Champions League"}
-"cuántos goles cayeron al final en la fecha 6 de la primera de chile" → {"type": "late_goals", "league": "Primera Division Chile", "round": 6}
-"partidos de hoy en la bundesliga" → {"type": "today_fixtures", "league": "Bundesliga"}
-"qué resultados hubo hoy" → {"type": "today_fixtures"}
+"qué partidos hay en vivo" → {"type": "live_fixtures"}
+"partidos de hoy" → {"type": "today_fixtures"}
 
 Devuelve SOLO el JSON, sin explicaciones ni markdown."""
 
 
 async def parse_intent_with_claude(text: str) -> dict:
-    """Use Claude API to parse user intent from natural language."""
     if not ANTHROPIC_API_KEY:
-        # Fallback to rule-based parser
         return intent_parser.parse(text)
-
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -83,14 +83,13 @@ async def parse_intent_with_claude(text: str) -> dict:
                 },
                 json={
                     "model": "claude-haiku-4-5-20251001",
-                    "max_tokens": 200,
+                    "max_tokens": 300,
                     "system": INTENT_SYSTEM_PROMPT,
                     "messages": [{"role": "user", "content": text}],
                 }
             ) as resp:
                 data = await resp.json()
                 raw = data["content"][0]["text"].strip()
-                # Strip markdown if present
                 raw = raw.replace("```json", "").replace("```", "").strip()
                 intent = json.loads(raw)
                 logger.info(f"Claude intent: {intent}")
@@ -98,6 +97,148 @@ async def parse_intent_with_claude(text: str) -> dict:
     except Exception as e:
         logger.error(f"Claude intent parsing failed: {e}, falling back to rule-based")
         return intent_parser.parse(text)
+
+
+async def process_late_goals_single(league_query: str, round_number: int) -> str:
+    """Process late goals for a single league + round."""
+    league_id, season = await football_api.find_league(league_query)
+    if not league_id:
+        return f"❌ No encontré la liga: *{league_query}*"
+
+    fixtures = await football_api.get_fixtures_by_round(league_id, season, round_number)
+    if not fixtures:
+        return f"❌ No encontré partidos para jornada *{round_number}* de *{league_query}*"
+
+    results = []
+    for f in fixtures:
+        status_short = f["fixture"]["status"]["short"]
+        if status_short not in ("FT", "AET", "PEN", "1H", "2H", "HT", "ET", "P", "LIVE"):
+            results.append({
+                "home": f["teams"]["home"]["name"],
+                "away": f["teams"]["away"]["name"],
+                "score_home": f.get("goals", {}).get("home", 0),
+                "score_away": f.get("goals", {}).get("away", 0),
+                "status": "No jugado",
+                "late_goals": [],
+            })
+            continue
+
+        fixture_id = f["fixture"]["id"]
+        events = await football_api.get_fixture_events(fixture_id)
+        late_goals = []
+        for ev in events:
+            if ev.get("type") != "Goal":
+                continue
+            minute = ev.get("time", {}).get("elapsed", 0) or 0
+            extra = ev.get("time", {}).get("extra")
+            if minute >= 90:
+                late_goals.append({
+                    "minute": minute,
+                    "extra": extra,
+                    "scorer": ev.get("player", {}).get("name", "?"),
+                    "team": ev.get("team", {}).get("name", "?"),
+                    "type": ev.get("detail", ""),
+                })
+
+        status_label = _status_label(status_short, f["fixture"]["status"].get("elapsed"))
+        results.append({
+            "home": f["teams"]["home"]["name"],
+            "away": f["teams"]["away"]["name"],
+            "score_home": f.get("goals", {}).get("home", 0),
+            "score_away": f.get("goals", {}).get("away", 0),
+            "status": status_label,
+            "late_goals": late_goals,
+        })
+
+    return response_builder.build_late_goals(results, league_query, round_number)
+
+
+async def get_last_n_rounds(league_query: str, n: int) -> list[int]:
+    """Get the last N played round numbers for a league."""
+    league_id, season = await football_api.find_league(league_query)
+    if not league_id:
+        return []
+    available = await football_api.get_available_rounds(league_id, season)
+    if not available:
+        return []
+    # Extract numbers from round names like "Regular Season - 7"
+    import re
+    numbered = []
+    for r in available:
+        m = re.search(r'(\d+)$', r.strip())
+        if m:
+            numbered.append(int(m.group(1)))
+    numbered = sorted(set(numbered))
+    return numbered[-n:] if len(numbered) >= n else numbered
+
+
+async def handle_late_goals_multi(intent: dict, update: Update):
+    """Handle multi-league, multi-round late goals query."""
+    leagues = intent.get("leagues", [])
+    rounds = intent.get("rounds")
+    rounds_count = intent.get("rounds_count")
+
+    if not leagues:
+        await update.message.reply_text(
+            "Especifica al menos una liga, por ejemplo:\n"
+            "`goles sobre el final últimas 3 jornadas primera division chile`",
+            parse_mode="Markdown"
+        )
+        return
+
+    # If rounds_count given but not specific rounds, resolve per league
+    if not rounds and rounds_count:
+        await update.message.reply_text(
+            f"⏳ Buscando las últimas {rounds_count} jornadas para {len(leagues)} liga(s)..."
+        )
+        # Get last N rounds for the first league (assume same for others)
+        rounds = await get_last_n_rounds(leagues[0], rounds_count)
+        if not rounds:
+            await update.message.reply_text("❌ No pude determinar las últimas jornadas. Especifica los números.")
+            return
+
+    if not rounds:
+        await update.message.reply_text(
+            "Especifica las jornadas, por ejemplo:\n"
+            "`goles sobre el final jornadas 6 7 8 primera division chile`",
+            parse_mode="Markdown"
+        )
+        return
+
+    total = len(leagues) * len(rounds)
+    await update.message.reply_text(
+        f"⏳ Analizando {len(leagues)} liga(s) × {len(rounds)} jornada(s) = {total} consulta(s)...\n"
+        f"Ligas: {', '.join(leagues)}\n"
+        f"Jornadas: {', '.join(str(r) for r in rounds)}"
+    )
+
+    # Process all combinations concurrently
+    tasks = []
+    labels = []
+    for league in leagues:
+        for round_num in rounds:
+            tasks.append(process_late_goals_single(league, round_num))
+            labels.append((league, round_num))
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Send results grouped by league
+    for league in leagues:
+        league_results = []
+        for i, (lbl_league, lbl_round) in enumerate(labels):
+            if lbl_league == league:
+                result = results[i]
+                if isinstance(result, Exception):
+                    league_results.append(f"❌ Jornada {lbl_round}: error al consultar")
+                else:
+                    league_results.append(result)
+
+        # Send each league as separate message
+        for msg in league_results:
+            try:
+                await update.message.reply_text(msg, parse_mode="Markdown")
+            except Exception:
+                await update.message.reply_text(msg)
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -115,7 +256,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `¿Qué partidos hay hoy?`\n"
         "• `Tabla de posiciones de La Liga`\n"
         "• `Goleadores de la Champions League`\n"
-        "• `Goles sobre el final jornada 7 Primera División Chile`\n\n"
+        "• `Goles sobre el final jornada 7 Primera División Chile`\n"
+        "• `Goles al final últimas 3 fechas en chile, holanda y alemania`\n\n"
         "Datos en vivo de API-Football ✅"
     )
     await update.message.reply_text(welcome, parse_mode="Markdown")
@@ -136,7 +278,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Escribe en lenguaje natural:\n"
         "• `¿Qué partidos se juegan hoy en Europa?`\n"
         "• `¿Cómo quedó el clásico?`\n"
-        "• `Cuántos goles cayeron al final en la fecha 6 de Chile`\n"
+        "• `Goles al final últimas 3 fechas chile y alemania`\n"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -229,80 +371,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     logger.info(f"Message from {chat_id}: {user_text}")
 
-    # Use Claude to parse intent
     intent = await parse_intent_with_claude(user_text)
     logger.info(f"Detected intent: {intent}")
 
     await update.message.reply_text("⏳ Consultando datos...")
 
     try:
-        if intent["type"] == "late_goals":
-            league_query = intent.get("league", "")
-            round_number = intent.get("round")
-            if not league_query:
-                await update.message.reply_text(
-                    "Especifica la liga y la jornada, por ejemplo:\n"
-                    "`goles sobre el final jornada 7 Primera División Chile`",
-                    parse_mode="Markdown"
-                )
-                return
-            league_id, season = await football_api.find_league(league_query)
-            if not league_id:
-                await update.message.reply_text(f"❌ No encontré la liga: *{league_query}*", parse_mode="Markdown")
-                return
-            if not round_number:
-                rounds = await football_api.get_available_rounds(league_id, season)
-                text = response_builder.build_late_goals_no_round(league_query, rounds)
-                await update.message.reply_text(text, parse_mode="Markdown")
-                return
-            fixtures = await football_api.get_fixtures_by_round(league_id, season, round_number)
-            if not fixtures:
-                await update.message.reply_text(
-                    f"❌ No encontré partidos para la jornada *{round_number}* de *{league_query}*.\n"
-                    f"Puede que esa jornada no exista o aún no se haya jugado.",
-                    parse_mode="Markdown"
-                )
-                return
-            await update.message.reply_text(f"⏳ Analizando {len(fixtures)} partido(s) de la jornada {round_number}...")
-            results = []
-            for f in fixtures:
-                status_short = f["fixture"]["status"]["short"]
-                if status_short not in ("FT", "AET", "PEN", "1H", "2H", "HT", "ET", "P", "LIVE"):
-                    results.append({
-                        "home": f["teams"]["home"]["name"],
-                        "away": f["teams"]["away"]["name"],
-                        "score_home": f.get("goals", {}).get("home", 0),
-                        "score_away": f.get("goals", {}).get("away", 0),
-                        "status": "No jugado",
-                        "late_goals": [],
-                    })
-                    continue
-                fixture_id = f["fixture"]["id"]
-                events = await football_api.get_fixture_events(fixture_id)
-                late_goals = []
-                for ev in events:
-                    if ev.get("type") != "Goal":
-                        continue
-                    minute = ev.get("time", {}).get("elapsed", 0) or 0
-                    extra = ev.get("time", {}).get("extra")
-                    if minute >= 90:
-                        late_goals.append({
-                            "minute": minute,
-                            "extra": extra,
-                            "scorer": ev.get("player", {}).get("name", "?"),
-                            "team": ev.get("team", {}).get("name", "?"),
-                            "type": ev.get("detail", ""),
-                        })
-                status_label = _status_label(status_short, f["fixture"]["status"].get("elapsed"))
-                results.append({
-                    "home": f["teams"]["home"]["name"],
-                    "away": f["teams"]["away"]["name"],
-                    "score_home": f.get("goals", {}).get("home", 0),
-                    "score_away": f.get("goals", {}).get("away", 0),
-                    "status": status_label,
-                    "late_goals": late_goals,
-                })
-            text = response_builder.build_late_goals(results, league_query, round_number)
+        if intent["type"] == "late_goals_multi":
+            await handle_late_goals_multi(intent, update)
+            return
 
         elif intent["type"] == "live_fixtures":
             fixtures = await football_api.get_live_fixtures(min_minute=intent.get("min_minute"))
@@ -366,7 +443,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "• `¿Cómo va la Premier League?`\n"
                 "• `Tabla de La Liga`\n"
                 "• `Goleadores Champions League`\n"
-                "• `Goles sobre el final jornada 7 Primera División Chile`\n\n"
+                "• `Goles al final últimas 3 fechas chile y alemania`\n\n"
                 "O usa /help para ver todos los comandos."
             )
 
