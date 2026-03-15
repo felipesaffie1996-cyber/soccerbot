@@ -16,7 +16,6 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8760870045:AAHXGZJGXHTsuLukgWYnVv3
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY", "7aa252fd9c63236a40e473bb6d518319")
 ALLOWED_CHAT_IDS_STR = os.getenv("ALLOWED_CHAT_IDS", "")
 
-# Parse allowed chat IDs (comma-separated in env var)
 ALLOWED_CHAT_IDS = set()
 if ALLOWED_CHAT_IDS_STR:
     for cid in ALLOWED_CHAT_IDS_STR.split(","):
@@ -33,9 +32,7 @@ intent_parser = IntentParser()
 
 
 def is_authorized(chat_id: int) -> bool:
-    """Check if a chat is authorized to use the bot."""
     if not ALLOWED_CHAT_IDS:
-        # If no whitelist configured, allow all (useful during initial setup)
         return True
     return chat_id in ALLOWED_CHAT_IDS
 
@@ -45,7 +42,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(chat_id):
         logger.warning(f"Unauthorized access attempt from chat_id: {chat_id}")
         return
-
     welcome = (
         "⚽ *SoccerBot activo*\n\n"
         "Puedo responder preguntas de fútbol en tiempo real. Prueba con:\n\n"
@@ -55,7 +51,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `Estadísticas del partido X vs Y`\n"
         "• `¿Qué partidos hay hoy?`\n"
         "• `Tabla de posiciones de La Liga`\n"
-        "• `Goleadores de la Champions League`\n\n"
+        "• `Goleadores de la Champions League`\n"
+        "• `Goles sobre el final jornada 7 Primera División Chile`\n\n"
         "Datos en vivo de API-Football ✅"
     )
     await update.message.reply_text(welcome, parse_mode="Markdown")
@@ -65,7 +62,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not is_authorized(chat_id):
         return
-
     help_text = (
         "📖 *Comandos disponibles:*\n\n"
         "/start — Mensaje de bienvenida\n"
@@ -77,7 +73,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "También puedes escribir en lenguaje natural:\n"
         "• `¿Qué partidos están en vivo en el minuto 80?`\n"
         "• `¿Cómo va el Chelsea vs Arsenal?`\n"
-        "• `Dame los goles del partido X`\n"
+        "• `Goles sobre el final jornada 5 Premier League`\n"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -86,7 +82,6 @@ async def live_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not is_authorized(chat_id):
         return
-
     await update.message.reply_text("⏳ Consultando partidos en vivo...")
     try:
         fixtures = await football_api.get_live_fixtures()
@@ -101,7 +96,6 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not is_authorized(chat_id):
         return
-
     await update.message.reply_text("⏳ Consultando partidos de hoy...")
     try:
         fixtures = await football_api.get_today_fixtures()
@@ -116,7 +110,6 @@ async def standings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not is_authorized(chat_id):
         return
-
     league_query = " ".join(context.args) if context.args else None
     if not league_query:
         await update.message.reply_text(
@@ -124,7 +117,6 @@ async def standings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         return
-
     await update.message.reply_text(f"⏳ Buscando tabla de {league_query}...")
     try:
         league_id, season = await football_api.find_league(league_query)
@@ -143,7 +135,6 @@ async def top_scorers_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = update.effective_chat.id
     if not is_authorized(chat_id):
         return
-
     league_query = " ".join(context.args) if context.args else None
     if not league_query:
         await update.message.reply_text(
@@ -151,7 +142,6 @@ async def top_scorers_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode="Markdown"
         )
         return
-
     await update.message.reply_text(f"⏳ Buscando goleadores de {league_query}...")
     try:
         league_id, season = await football_api.find_league(league_query)
@@ -171,24 +161,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(chat_id):
         logger.warning(f"Unauthorized message from chat_id: {chat_id}")
         return
-
     user_text = update.message.text.strip()
     if not user_text:
         return
-
     logger.info(f"Message from {chat_id}: {user_text}")
-
-    # Parse intent from natural language
     intent = intent_parser.parse(user_text)
     logger.info(f"Detected intent: {intent}")
-
     await update.message.reply_text("⏳ Consultando datos...")
-
     try:
         if intent["type"] == "late_goals":
             league_query = intent.get("league", "")
             round_number = intent.get("round")
-
             if not league_query:
                 await update.message.reply_text(
                     "Especifica la liga y la jornada, por ejemplo:\n"
@@ -196,21 +179,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
                 return
-
             league_id, season = await football_api.find_league(league_query)
             if not league_id:
-                text = f"❌ No encontré la liga: *{league_query}*"
-                await update.message.reply_text(text, parse_mode="Markdown")
+                await update.message.reply_text(f"❌ No encontré la liga: *{league_query}*", parse_mode="Markdown")
                 return
-
             if not round_number:
-                # Ask user to specify a round
                 rounds = await football_api.get_available_rounds(league_id, season)
                 text = response_builder.build_late_goals_no_round(league_query, rounds)
                 await update.message.reply_text(text, parse_mode="Markdown")
                 return
-
-            # Get all fixtures for the round
             fixtures = await football_api.get_fixtures_by_round(league_id, season, round_number)
             if not fixtures:
                 await update.message.reply_text(
@@ -219,18 +196,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
                 return
-
-            # For each finished/live fixture, get events and filter 90+ goals
-            await update.message.reply_text(
-                f"⏳ Analizando {len(fixtures)} partido(s) de la jornada {round_number}..."
-            )
+            await update.message.reply_text(f"⏳ Analizando {len(fixtures)} partido(s) de la jornada {round_number}...")
             results = []
             for f in fixtures:
                 status_short = f["fixture"]["status"]["short"]
-                # Only analyze finished or live matches
                 if status_short not in ("FT", "AET", "PEN", "1H", "2H", "HT", "ET", "P", "LIVE"):
                     results.append({
-                        "fixture": f["fixture"],
                         "home": f["teams"]["home"]["name"],
                         "away": f["teams"]["away"]["name"],
                         "score_home": f.get("goals", {}).get("home", 0),
@@ -239,7 +210,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "late_goals": [],
                     })
                     continue
-
                 fixture_id = f["fixture"]["id"]
                 events = await football_api.get_fixture_events(fixture_id)
                 late_goals = []
@@ -248,7 +218,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         continue
                     minute = ev.get("time", {}).get("elapsed", 0) or 0
                     extra = ev.get("time", {}).get("extra")
-                    # 90+ means elapsed >= 90 with extra time, OR extra is set
                     if (minute >= 90 and extra) or (minute > 90):
                         late_goals.append({
                             "minute": minute,
@@ -257,10 +226,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             "team": ev.get("team", {}).get("name", "?"),
                             "type": ev.get("detail", ""),
                         })
-
                 status_label = _status_label(status_short, f["fixture"]["status"].get("elapsed"))
                 results.append({
-                    "fixture": f["fixture"],
                     "home": f["teams"]["home"]["name"],
                     "away": f["teams"]["away"]["name"],
                     "score_home": f.get("goals", {}).get("home", 0),
@@ -268,13 +235,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "status": status_label,
                     "late_goals": late_goals,
                 })
-
             text = response_builder.build_late_goals(results, league_query, round_number)
 
         elif intent["type"] == "live_fixtures":
-            fixtures = await football_api.get_live_fixtures(
-                min_minute=intent.get("min_minute")
-            )
+            fixtures = await football_api.get_live_fixtures(min_minute=intent.get("min_minute"))
             text = response_builder.build_live_fixtures(fixtures, min_minute=intent.get("min_minute"))
 
         elif intent["type"] == "live_fixture_detail":
@@ -287,7 +251,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lineups = await football_api.get_fixture_lineups(fixture_id)
                 text = response_builder.build_fixture_detail(fixture, stats, events, lineups)
             else:
-                text = f"❌ No encontré un partido en vivo con esos equipos."
+                text = "❌ No encontré un partido en vivo con esos equipos."
 
         elif intent["type"] == "today_fixtures":
             fixtures = await football_api.get_today_fixtures(league_query=intent.get("league"))
@@ -317,7 +281,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             fixtures = await football_api.get_live_fixtures()
             fixture = _find_fixture(fixtures, team1, team2)
             if not fixture:
-                # Try today's fixtures
                 today_fixtures = await football_api.get_today_fixtures()
                 fixture = _find_fixture(today_fixtures, team1, team2)
             if fixture:
@@ -326,7 +289,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 events = await football_api.get_fixture_events(fixture_id)
                 text = response_builder.build_fixture_stats(fixture, stats, events)
             else:
-                text = f"❌ No encontré el partido solicitado."
+                text = "❌ No encontré el partido solicitado."
 
         else:
             text = (
@@ -336,7 +299,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "• `¿Cómo va la Premier League?`\n"
                 "• `Tabla de La Liga`\n"
                 "• `Goleadores Champions League`\n"
-                "• `Estadísticas Chelsea vs Arsenal`\n\n"
+                "• `Goles sobre el final jornada 7 Primera División Chile`\n\n"
                 "O usa /help para ver todos los comandos."
             )
 
@@ -348,7 +311,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def _find_fixture(fixtures: list, team1: str, team2: str) -> dict | None:
-    """Find a fixture by team names (fuzzy match)."""
     if not team1:
         return None
     for f in fixtures:
@@ -364,7 +326,6 @@ def _find_fixture(fixtures: list, team1: str, team2: str) -> dict | None:
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("live", live_command))
@@ -372,7 +333,6 @@ def main():
     app.add_handler(CommandHandler("standings", standings_command))
     app.add_handler(CommandHandler("top", top_scorers_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
     logger.info("SoccerBot iniciado ✅")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
