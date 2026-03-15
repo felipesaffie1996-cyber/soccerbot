@@ -218,7 +218,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         continue
                     minute = ev.get("time", {}).get("elapsed", 0) or 0
                     extra = ev.get("time", {}).get("extra")
-                    if (minute >= 90 and extra) or (minute > 90):
+                    if minute >= 90:
                         late_goals.append({
                             "minute": minute,
                             "extra": extra,
