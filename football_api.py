@@ -177,6 +177,43 @@ class FootballAPI:
         data = await self._get("players/topscorers", {"league": league_id, "season": season})
         return data.get("response", [])
 
+    async def get_fixtures_by_round(self, league_id: int, season: int, round_number: int) -> list:
+        """Get all fixtures for a specific round/jornada."""
+        # API-Football round format: "Regular Season - 7"
+        round_str = f"Regular Season - {round_number}"
+        data = await self._get("fixtures", {
+            "league": league_id,
+            "season": season,
+            "round": round_str,
+        })
+        fixtures = data.get("response", [])
+        # Fallback: try other round name formats if empty
+        if not fixtures:
+            round_str2 = f"Clausura - {round_number}"
+            data2 = await self._get("fixtures", {
+                "league": league_id,
+                "season": season,
+                "round": round_str2,
+            })
+            fixtures = data2.get("response", [])
+        if not fixtures:
+            round_str3 = f"Apertura - {round_number}"
+            data3 = await self._get("fixtures", {
+                "league": league_id,
+                "season": season,
+                "round": round_str3,
+            })
+            fixtures = data3.get("response", [])
+        return fixtures
+
+    async def get_available_rounds(self, league_id: int, season: int) -> list:
+        """Get all available rounds for a league/season."""
+        data = await self._get("fixtures/rounds", {
+            "league": league_id,
+            "season": season,
+        })
+        return data.get("response", [])
+
     async def close(self):
         if self._session and not self._session.closed:
             await self._session.close()

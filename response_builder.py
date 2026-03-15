@@ -244,7 +244,69 @@ class ResponseBuilder:
         lines.append("_G=Ganados D=Empates P=Perdidos_")
         return _truncate("\n".join(lines))
 
-    def build_top_scorers(self, scorers: list, league_name: str) -> str:
+    def build_late_goals(self, results: list, league_name: str, round_number: int) -> str:
+        """Show goals scored in added time (90+) across all matches of a round."""
+        if not results:
+            return (
+                f"❌ No encontré partidos para la *Jornada {round_number}* de *{league_name}*.\n\n"
+                f"Verifica que la jornada ya se haya jugado y que el nombre de la liga sea correcto."
+            )
+
+        total_late_goals = 0
+        matches_with_late = 0
+        lines = [
+            f"⏱ *Goles en tiempo adicional (90+)*",
+            f"🏆 {league_name} — Jornada {round_number}\n",
+        ]
+
+        for item in results:
+            fixture = item["fixture"]
+            home = item["home"]
+            away = item["away"]
+            score_h = item["score_home"]
+            score_a = item["score_away"]
+            late_goals = item["late_goals"]
+            status = item["status"]
+
+            match_line = f"*{home} {score_h}-{score_a} {away}* ({status})"
+
+            if late_goals:
+                matches_with_late += 1
+                total_late_goals += len(late_goals)
+                lines.append(f"⚽ {match_line}")
+                for g in late_goals:
+                    minute = g["minute"]
+                    extra = g.get("extra")
+                    min_str = f"90+{extra}'" if extra else f"{minute}'"
+                    scorer = g["scorer"]
+                    team = g["team"]
+                    goal_type = g.get("type", "")
+                    type_str = " 🎯 (pen)" if "Penalty" in goal_type else ""
+                    lines.append(f"    ⚽ {min_str} {scorer} ({team}){type_str}")
+            else:
+                lines.append(f"➖ {match_line} — sin goles en 90+")
+
+        lines.append("")
+        lines.append(
+            f"📊 *Resumen:* {total_late_goals} gol(es) en tiempo adicional "
+            f"en {matches_with_late} de {len(results)} partido(s)"
+        )
+
+        return _truncate("\n".join(lines))
+
+    def build_late_goals_no_round(self, league_name: str, available_rounds: list) -> str:
+        """Ask user to specify a round when none was provided."""
+        lines = [f"¿De qué jornada quieres los goles en tiempo adicional de *{league_name}*?\n"]
+        if available_rounds:
+            # Show last 5 rounds as examples
+            recent = available_rounds[-5:] if len(available_rounds) >= 5 else available_rounds
+            lines.append("Últimas jornadas disponibles:")
+            for r in reversed(recent):
+                lines.append(f"  • {r}")
+            lines.append("\nEjemplo: `goles sobre el final jornada 7 Primera División Chile`")
+        return "\n".join(lines)
+
+
         if not scorers:
             return f"❌ No se encontraron goleadores para *{league_name}*."
 

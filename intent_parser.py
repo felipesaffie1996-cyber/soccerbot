@@ -3,6 +3,21 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Late goals keywords
+LATE_GOALS_KEYWORDS = [
+    "goles sobre el final", "goles en tiempo adicional", "goles en el 90",
+    "goles en tiempo extra", "goles al final", "cuántos goles sobre el final",
+    "cuantos goles sobre el final", "goles después del 90", "goles despues del 90",
+    "goles en adición", "goles de tiempo adicionado", "goles en el descuento",
+    "goles en added time", "goles injury time", "goles en el alargue",
+    "goles en tiempo de descuento", "goles tardíos", "goles tardios",
+]
+
+ROUND_PATTERN = re.compile(
+    r"(?:jornada|ronda|fecha|round|jornada n[uú]mero|fecha n[uú]mero)\s*(\d+)",
+    re.IGNORECASE
+)
+
 # Keyword patterns
 LIVE_KEYWORDS = [
     "en vivo", "en directo", "live", "ahora", "jugando", "jugándose",
@@ -82,6 +97,17 @@ class IntentParser:
                 "type": "fixture_stats",
                 "team1": vs_basic.group(1).strip(),
                 "team2": vs_basic.group(2).strip(),
+            }
+
+        # --- Late goals (90+) analysis ---
+        if any(k in text_lower for k in LATE_GOALS_KEYWORDS):
+            league = self._extract_league(text_lower, "late_goals")
+            round_match = ROUND_PATTERN.search(text_lower)
+            round_number = int(round_match.group(1)) if round_match else None
+            return {
+                "type": "late_goals",
+                "league": league,
+                "round": round_number,
             }
 
         # --- Top scorers ---

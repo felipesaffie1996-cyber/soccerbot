@@ -3,7 +3,7 @@ import os
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 from football_api import FootballAPI
-from response_builder import ResponseBuilder
+from response_builder import ResponseBuilder, _status_label
 from intent_parser import IntentParser
 
 logging.basicConfig(
@@ -185,7 +185,93 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Consultando datos...")
 
     try:
-        if intent["type"] == "live_fixtures":
+        if intent["type"] == "late_goals":
+            league_query = intent.get("league", "")
+            round_number = intent.get("round")
+
+            if not league_query:
+                await update.message.reply_text(
+                    "Especifica la liga y la jornada, por ejemplo:\n"
+                    "`goles sobre el final jornada 7 Primera División Chile`",
+                    parse_mode="Markdown"
+                )
+                return
+
+            league_id, season = await football_api.find_league(league_query)
+            if not league_id:
+                text = f"❌ No encontré la liga: *{league_query}*"
+                await update.message.reply_text(text, parse_mode="Markdown")
+                return
+
+            if not round_number:
+                # Ask user to specify a round
+                rounds = await football_api.get_available_rounds(league_id, season)
+                text = response_builder.build_late_goals_no_round(league_query, rounds)
+                await update.message.reply_text(text, parse_mode="Markdown")
+                return
+
+            # Get all fixtures for the round
+            fixtures = await football_api.get_fixtures_by_round(league_id, season, round_number)
+            if not fixtures:
+                await update.message.reply_text(
+                    f"❌ No encontré partidos para la jornada *{round_number}* de *{league_query}*.\n"
+                    f"Puede que esa jornada no exista o aún no se haya jugado.",
+                    parse_mode="Markdown"
+                )
+                return
+
+            # For each finished/live fixture, get events and filter 90+ goals
+            await update.message.reply_text(
+                f"⏳ Analizando {len(fixtures)} partido(s) de la jornada {round_number}..."
+            )
+            results = []
+            for f in fixtures:
+                status_short = f["fixture"]["status"]["short"]
+                # Only analyze finished or live matches
+                if status_short not in ("FT", "AET", "PEN", "1H", "2H", "HT", "ET", "P", "LIVE"):
+                    results.append({
+                        "fixture": f["fixture"],
+                        "home": f["teams"]["home"]["name"],
+                        "away": f["teams"]["away"]["name"],
+                        "score_home": f.get("goals", {}).get("home", 0),
+                        "score_away": f.get("goals", {}).get("away", 0),
+                        "status": "No jugado",
+                        "late_goals": [],
+                    })
+                    continue
+
+                fixture_id = f["fixture"]["id"]
+                events = await football_api.get_fixture_events(fixture_id)
+                late_goals = []
+                for ev in events:
+                    if ev.get("type") != "Goal":
+                        continue
+                    minute = ev.get("time", {}).get("elapsed", 0) or 0
+                    extra = ev.get("time", {}).get("extra")
+                    # 90+ means elapsed >= 90 with extra time, OR extra is set
+                    if (minute >= 90 and extra) or (minute > 90):
+                        late_goals.append({
+                            "minute": minute,
+                            "extra": extra,
+                            "scorer": ev.get("player", {}).get("name", "?"),
+                            "team": ev.get("team", {}).get("name", "?"),
+                            "type": ev.get("detail", ""),
+                        })
+
+                status_label = _status_label(status_short, f["fixture"]["status"].get("elapsed"))
+                results.append({
+                    "fixture": f["fixture"],
+                    "home": f["teams"]["home"]["name"],
+                    "away": f["teams"]["away"]["name"],
+                    "score_home": f.get("goals", {}).get("home", 0),
+                    "score_away": f.get("goals", {}).get("away", 0),
+                    "status": status_label,
+                    "late_goals": late_goals,
+                })
+
+            text = response_builder.build_late_goals(results, league_query, round_number)
+
+        elif intent["type"] == "live_fixtures":
             fixtures = await football_api.get_live_fixtures(
                 min_minute=intent.get("min_minute")
             )
