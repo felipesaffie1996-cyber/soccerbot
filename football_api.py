@@ -1,5 +1,4 @@
 import aiohttp
-import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -31,7 +30,8 @@ LEAGUE_ALIASES = {
     "copa sudamericana": 11, "sudamericana": 11,
     "mls": 253,
     "liga profesional": 128, "primera division argentina": 128,
-    "primera division chile": 265, "primera chile": 265, "primera division de chile": 265,
+    "primera division chile": 265, "primera chile": 265,
+    "primera division de chile": 265, "primera div chile": 265,
     "brasileirao": 71, "serie a brasil": 71,
     "liga mx": 262,
     "world cup": 1,
@@ -138,12 +138,42 @@ class FootballAPI:
         return data.get("response", [])
 
     async def get_fixtures_by_round(self, league_id: int, season: int, round_number: int) -> list:
-        for round_str in [
+        # Primero consultamos las rondas disponibles para usar el nombre exacto
+        available_rounds = await self.get_available_rounds(league_id, season)
+        logger.info(f"Available rounds for league {league_id}: {available_rounds}")
+
+        # Buscar la ronda que contenga el número exacto
+        target = None
+        for r in available_rounds:
+            # Buscar rondas que terminen con "- N" o contengan el número al final
+            import re
+            if re.search(rf'[-\s]{round_number}$', r.strip()):
+                target = r
+                break
+
+        if target:
+            logger.info(f"Matched round: {target}")
+            data = await self._get("fixtures", {
+                "league": league_id,
+                "season": season,
+                "round": target,
+            })
+            fixtures = data.get("response", [])
+            if fixtures:
+                return fixtures
+
+        # Fallback: probar formatos comunes
+        fallback_names = [
             f"Regular Season - {round_number}",
             f"Clausura - {round_number}",
             f"Apertura - {round_number}",
             f"Liga - {round_number}",
-        ]:
+            f"Fecha {round_number}",
+            f"Round {round_number}",
+            f"Week {round_number}",
+            f"Matchday {round_number}",
+        ]
+        for round_str in fallback_names:
             data = await self._get("fixtures", {
                 "league": league_id,
                 "season": season,
@@ -151,7 +181,9 @@ class FootballAPI:
             })
             fixtures = data.get("response", [])
             if fixtures:
+                logger.info(f"Matched fallback round: {round_str}")
                 return fixtures
+
         return []
 
     async def get_available_rounds(self, league_id: int, season: int) -> list:
