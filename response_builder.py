@@ -238,7 +238,6 @@ class ResponseBuilder:
             return f"❌ No encontré resultados para *{team_name}*."
         lines = [f"📋 *Últimos resultados — {team_name}*\n"]
         wins = draws = losses = goals_for = goals_against = 0
-        unbeaten_streak = 0
         last_loss_date = None
         for f in reversed(fixtures):
             status = f["fixture"]["status"]["short"]
@@ -268,7 +267,6 @@ class ResponseBuilder:
                 last_loss_date = date
             venue = "🏠" if is_home else "✈️"
             lines.append(f"{venue} {result} {my_goals}-{opp_goals} vs *{opp_name}* | {date} | _{league}_")
-
         total = wins + draws + losses
         lines.append("")
         lines.append(f"📊 *Resumen ({total} partidos):* {wins}V {draws}E {losses}D")
@@ -340,38 +338,50 @@ class ResponseBuilder:
         avg = summary["avg_goals"]
         btts = summary["btts"]
         btts_pct = summary["btts_pct"]
+        fh = summary.get("first_half_goals", 0)
+        sh = summary.get("second_half_goals", 0)
         lines = [
             f"📊 *Resumen de goles — {league_name} Jornada {r}*\n",
             f"✅ Partidos jugados: {played}",
-            f"⚽ Total goles: {total}",
-            f"📈 Promedio por partido: {avg}",
-            f"🎯 BTTS (ambos anotan): {btts}/{played} ({btts_pct}%)",
+            f"⚽ Total goles: {total} (avg {avg})",
+            f"1️⃣ Primer tiempo: {fh} goles",
+            f"2️⃣ Segundo tiempo: {sh} goles",
+            f"🎯 BTTS: {btts}/{played} ({btts_pct}%)",
             "",
-            "*Resultados:*",
+            "*Desglose por partido:*",
         ]
+        max_fh = max((m["first_half_goals"] for m in summary["matches"]), default=0)
         for m in summary["matches"]:
             btts_icon = "✅" if m["btts"] else "❌"
-            lines.append(f"  {btts_icon} *{m['home']}* {m['score_h']}-{m['score_a']} *{m['away']}*")
+            star = " ⭐" if m["first_half_goals"] == max_fh and max_fh > 0 else ""
+            lines.append(
+                f"  {btts_icon} *{m['home']}* {m['score_h']}-{m['score_a']} *{m['away']}* "
+                f"| 1T: {m['first_half_goals']}⚽ 2T: {m['second_half_goals']}⚽{star}"
+            )
+        lines.append("")
+        lines.append(f"⭐ = máximo goles en 1T ({max_fh})")
         return _truncate("\n".join(lines))
 
     def build_multi_round_summary(self, summaries: list, league_name: str) -> str:
         if not summaries:
             return f"❌ No hay datos para *{league_name}*."
         lines = [f"📊 *Resumen histórico — {league_name}*\n"]
-        lines.append("`Jorn  PJ  Goles  Avg  BTTS%`")
-        total_goals = 0
-        total_played = 0
-        total_btts = 0
+        lines.append("`Jorn  PJ  Goles  1T   2T   Avg  BTTS%`")
+        total_goals = total_played = total_btts = total_fh = total_sh = 0
         for s in summaries:
             if s.get("played", 0) == 0:
                 continue
             total_goals += s["total_goals"]
             total_played += s["played"]
             total_btts += s["btts"]
+            total_fh += s.get("first_half_goals", 0)
+            total_sh += s.get("second_half_goals", 0)
             lines.append(
                 f"`{str(s['round']).rjust(4)}  "
                 f"{str(s['played']).rjust(2)}  "
                 f"{str(s['total_goals']).rjust(5)}  "
+                f"{str(s.get('first_half_goals', 0)).rjust(3)}  "
+                f"{str(s.get('second_half_goals', 0)).rjust(3)}  "
                 f"{str(s['avg_goals']).rjust(4)}  "
                 f"{str(s['btts_pct']).rjust(4)}%`"
             )
@@ -380,6 +390,7 @@ class ResponseBuilder:
             overall_btts = round(total_btts / total_played * 100)
             lines.append("")
             lines.append(f"*Total:* {total_goals} goles en {total_played} partidos")
+            lines.append(f"*1T:* {total_fh} goles | *2T:* {total_sh} goles")
             lines.append(f"*Promedio global:* {overall_avg} goles/partido")
             lines.append(f"*BTTS global:* {overall_btts}%")
         return _truncate("\n".join(lines))
