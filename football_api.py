@@ -41,9 +41,7 @@ LEAGUE_ALIASES = {
     "nations league": 5,
 }
 
-CALENDAR_YEAR_LEAGUES = {
-    265, 128, 71, 262, 253, 11, 13, 9,
-}
+CALENDAR_YEAR_LEAGUES = {265, 128, 71, 262, 253, 11, 13, 9}
 
 CURRENT_SEASON = datetime.now().year
 if datetime.now().month < 7:
@@ -149,25 +147,15 @@ class FootballAPI:
         return None
 
     async def get_team_last_fixtures(self, team_id: int, n: int = 10) -> list:
-        data = await self._get("fixtures", {
-            "team": team_id,
-            "last": n,
-        })
+        data = await self._get("fixtures", {"team": team_id, "last": n})
         return data.get("response", [])
 
     async def get_team_next_fixtures(self, team_id: int, n: int = 5) -> list:
-        data = await self._get("fixtures", {
-            "team": team_id,
-            "next": n,
-        })
+        data = await self._get("fixtures", {"team": team_id, "next": n})
         return data.get("response", [])
 
     async def get_next_fixtures_by_league(self, league_id: int, season: int, n: int = 10) -> list:
-        data = await self._get("fixtures", {
-            "league": league_id,
-            "season": season,
-            "next": n,
-        })
+        data = await self._get("fixtures", {"league": league_id, "season": season, "next": n})
         return data.get("response", [])
 
     async def get_head_to_head(self, team1_id: int, team2_id: int, last: int = 10) -> list:
@@ -226,9 +214,10 @@ class FootballAPI:
         return data.get("response", [])
 
     async def get_round_goals_summary(self, league_id: int, season: int, round_number: int) -> dict:
-        """Get total goals and BTTS stats for a round."""
         fixtures = await self.get_fixtures_by_round(league_id, season, round_number)
         total_goals = 0
+        first_half_goals = 0
+        second_half_goals = 0
         btts = 0
         played = 0
         matches = []
@@ -242,17 +231,29 @@ class FootballAPI:
             total_goals += h + a
             if h > 0 and a > 0:
                 btts += 1
+            events = await self.get_fixture_events(f["fixture"]["id"])
+            fh = sum(1 for ev in events
+                     if ev.get("type") == "Goal"
+                     and (ev.get("time", {}).get("elapsed", 0) or 0) <= 45
+                     and not ev.get("time", {}).get("extra"))
+            sh = (h + a) - fh
+            first_half_goals += fh
+            second_half_goals += sh
             matches.append({
                 "home": f["teams"]["home"]["name"],
                 "away": f["teams"]["away"]["name"],
                 "score_h": h,
                 "score_a": a,
                 "btts": h > 0 and a > 0,
+                "first_half_goals": fh,
+                "second_half_goals": sh,
             })
         return {
             "round": round_number,
             "played": played,
             "total_goals": total_goals,
+            "first_half_goals": first_half_goals,
+            "second_half_goals": second_half_goals,
             "avg_goals": round(total_goals / played, 2) if played else 0,
             "btts": btts,
             "btts_pct": round(btts / played * 100) if played else 0,
