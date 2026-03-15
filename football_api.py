@@ -41,24 +41,14 @@ LEAGUE_ALIASES = {
     "nations league": 5,
 }
 
-# Ligas que usan año calendario (temporada = año actual, no año anterior)
 CALENDAR_YEAR_LEAGUES = {
-    265,  # Primera División Chile
-    128,  # Liga Profesional Argentina
-    71,   # Brasileirao
-    262,  # Liga MX
-    253,  # MLS
-    11,   # Copa Sudamericana
-    13,   # Copa Libertadores
-    9,    # Copa America
+    265, 128, 71, 262, 253, 11, 13, 9,
 }
 
-# Temporada para ligas europeas (agosto-mayo)
 CURRENT_SEASON = datetime.now().year
 if datetime.now().month < 7:
     CURRENT_SEASON = datetime.now().year - 1
 
-# Temporada para ligas de año calendario
 CURRENT_CALENDAR_SEASON = datetime.now().year
 
 
@@ -99,12 +89,8 @@ class FootballAPI:
         data = await self._get("fixtures", {"live": "all"})
         fixtures = data.get("response", [])
         if min_minute is not None:
-            filtered = []
-            for f in fixtures:
-                elapsed = f.get("fixture", {}).get("status", {}).get("elapsed") or 0
-                if elapsed >= min_minute:
-                    filtered.append(f)
-            return filtered
+            return [f for f in fixtures
+                    if (f.get("fixture", {}).get("status", {}).get("elapsed") or 0) >= min_minute]
         return fixtures
 
     async def get_today_fixtures(self, league_query: str = None) -> list:
@@ -145,20 +131,57 @@ class FootballAPI:
             for entry in leagues:
                 league_id = entry["league"]["id"]
                 season = get_season_for_league(league_id)
-                seasons = entry.get("seasons", [])
-                for s in seasons:
+                for s in entry.get("seasons", []):
                     if s.get("current") and s.get("year") == season:
                         return league_id, season
             league_id = leagues[0]["league"]["id"]
             return league_id, get_season_for_league(league_id)
         return None, CURRENT_SEASON
 
+    async def find_team(self, query: str, league_id: int = None) -> Optional[int]:
+        params = {"search": query}
+        if league_id:
+            params["league"] = league_id
+        data = await self._get("teams", params)
+        teams = data.get("response", [])
+        if teams:
+            return teams[0]["team"]["id"]
+        return None
+
+    async def get_team_last_fixtures(self, team_id: int, n: int = 10) -> list:
+        data = await self._get("fixtures", {
+            "team": team_id,
+            "last": n,
+        })
+        return data.get("response", [])
+
+    async def get_team_next_fixtures(self, team_id: int, n: int = 5) -> list:
+        data = await self._get("fixtures", {
+            "team": team_id,
+            "next": n,
+        })
+        return data.get("response", [])
+
+    async def get_next_fixtures_by_league(self, league_id: int, season: int, n: int = 10) -> list:
+        data = await self._get("fixtures", {
+            "league": league_id,
+            "season": season,
+            "next": n,
+        })
+        return data.get("response", [])
+
+    async def get_head_to_head(self, team1_id: int, team2_id: int, last: int = 10) -> list:
+        data = await self._get("fixtures/headtohead", {
+            "h2h": f"{team1_id}-{team2_id}",
+            "last": last,
+        })
+        return data.get("response", [])
+
     async def get_standings(self, league_id: int, season: int) -> list:
         data = await self._get("standings", {"league": league_id, "season": season})
         response = data.get("response", [])
         if response:
-            league_data = response[0].get("league", {})
-            return league_data.get("standings", [])
+            return response[0].get("league", {}).get("standings", [])
         return []
 
     async def get_top_scorers(self, league_id: int, season: int) -> list:
@@ -166,33 +189,21 @@ class FootballAPI:
         return data.get("response", [])
 
     async def get_fixtures_by_round(self, league_id: int, season: int, round_number: int) -> list:
-        # Para ligas de año calendario, forzar temporada actual
         if league_id in CALENDAR_YEAR_LEAGUES:
             season = CURRENT_CALENDAR_SEASON
-
         available_rounds = await self.get_available_rounds(league_id, season)
         logger.info(f"Available rounds for league {league_id} season {season}: {available_rounds}")
-
-        # Buscar la ronda que termine con el número exacto
         target = None
         for r in available_rounds:
             if re.search(rf'[-\s]{round_number}$', r.strip()):
                 target = r
                 break
-
         if target:
-            logger.info(f"Matched round: {target}")
-            data = await self._get("fixtures", {
-                "league": league_id,
-                "season": season,
-                "round": target,
-            })
+            data = await self._get("fixtures", {"league": league_id, "season": season, "round": target})
             fixtures = data.get("response", [])
             if fixtures:
                 return fixtures
-
-        # Fallback con nombres comunes
-        fallback_names = [
+        for round_str in [
             f"Regular Season - {round_number}",
             f"Clausura - {round_number}",
             f"Apertura - {round_number}",
@@ -201,26 +212,52 @@ class FootballAPI:
             f"Round {round_number}",
             f"Week {round_number}",
             f"Matchday {round_number}",
-        ]
-        for round_str in fallback_names:
-            data = await self._get("fixtures", {
-                "league": league_id,
-                "season": season,
-                "round": round_str,
-            })
+        ]:
+            data = await self._get("fixtures", {"league": league_id, "season": season, "round": round_str})
             fixtures = data.get("response", [])
             if fixtures:
-                logger.info(f"Matched fallback round: {round_str}")
                 return fixtures
-
         return []
 
     async def get_available_rounds(self, league_id: int, season: int) -> list:
-        # Para ligas de año calendario, forzar temporada actual
         if league_id in CALENDAR_YEAR_LEAGUES:
             season = CURRENT_CALENDAR_SEASON
         data = await self._get("fixtures/rounds", {"league": league_id, "season": season})
         return data.get("response", [])
+
+    async def get_round_goals_summary(self, league_id: int, season: int, round_number: int) -> dict:
+        """Get total goals and BTTS stats for a round."""
+        fixtures = await self.get_fixtures_by_round(league_id, season, round_number)
+        total_goals = 0
+        btts = 0
+        played = 0
+        matches = []
+        for f in fixtures:
+            status = f["fixture"]["status"]["short"]
+            if status not in ("FT", "AET", "PEN"):
+                continue
+            played += 1
+            h = f.get("goals", {}).get("home", 0) or 0
+            a = f.get("goals", {}).get("away", 0) or 0
+            total_goals += h + a
+            if h > 0 and a > 0:
+                btts += 1
+            matches.append({
+                "home": f["teams"]["home"]["name"],
+                "away": f["teams"]["away"]["name"],
+                "score_h": h,
+                "score_a": a,
+                "btts": h > 0 and a > 0,
+            })
+        return {
+            "round": round_number,
+            "played": played,
+            "total_goals": total_goals,
+            "avg_goals": round(total_goals / played, 2) if played else 0,
+            "btts": btts,
+            "btts_pct": round(btts / played * 100) if played else 0,
+            "matches": matches,
+        }
 
     async def close(self):
         if self._session and not self._session.closed:
