@@ -1,5 +1,7 @@
 import logging
 import os
+import json
+import aiohttp
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 from football_api import FootballAPI
@@ -12,8 +14,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8760870045:AAHXGZJGXHTsuLukgWYnVv34bLDZd21RZA4")
-FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY", "7aa252fd9c63236a40e473bb6d518319")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ALLOWED_CHAT_IDS_STR = os.getenv("ALLOWED_CHAT_IDS", "")
 
 ALLOWED_CHAT_IDS = set()
@@ -35,6 +38,66 @@ def is_authorized(chat_id: int) -> bool:
     if not ALLOWED_CHAT_IDS:
         return True
     return chat_id in ALLOWED_CHAT_IDS
+
+
+INTENT_SYSTEM_PROMPT = """Eres un extractor de intenciones para un bot de fútbol.
+El usuario envía mensajes en español sobre fútbol. Tu tarea es extraer la intención y devolver SOLO un JSON válido, sin texto adicional.
+
+Intenciones posibles:
+- live_fixtures: quiere ver partidos en vivo. Puede incluir min_minute (int) si pide un minuto específico.
+- today_fixtures: quiere ver partidos de hoy. Puede incluir league (string).
+- standings: quiere tabla de posiciones. Incluir league (string).
+- top_scorers: quiere goleadores. Incluir league (string).
+- live_fixture_detail: quiere detalle de un partido en vivo. Incluir team1 y team2 (strings).
+- fixture_stats: quiere estadísticas de un partido. Incluir team1 y team2 (strings).
+- late_goals: quiere goles en tiempo adicional (90+) de una jornada. Incluir league (string) y round (int).
+- unknown: no se entiende la consulta.
+
+Ejemplos:
+"qué partidos hay en vivo" → {"type": "live_fixtures"}
+"partidos en el minuto 75 o más" → {"type": "live_fixtures", "min_minute": 75}
+"cómo va el clásico, real madrid y barcelona" → {"type": "live_fixture_detail", "team1": "real madrid", "team2": "barcelona"}
+"tabla de la premier" → {"type": "standings", "league": "Premier League"}
+"goleadores de la champions" → {"type": "top_scorers", "league": "Champions League"}
+"cuántos goles cayeron al final en la fecha 6 de la primera de chile" → {"type": "late_goals", "league": "Primera Division Chile", "round": 6}
+"partidos de hoy en la bundesliga" → {"type": "today_fixtures", "league": "Bundesliga"}
+"qué resultados hubo hoy" → {"type": "today_fixtures"}
+
+Devuelve SOLO el JSON, sin explicaciones ni markdown."""
+
+
+async def parse_intent_with_claude(text: str) -> dict:
+    """Use Claude API to parse user intent from natural language."""
+    if not ANTHROPIC_API_KEY:
+        # Fallback to rule-based parser
+        return intent_parser.parse(text)
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 200,
+                    "system": INTENT_SYSTEM_PROMPT,
+                    "messages": [{"role": "user", "content": text}],
+                }
+            ) as resp:
+                data = await resp.json()
+                raw = data["content"][0]["text"].strip()
+                # Strip markdown if present
+                raw = raw.replace("```json", "").replace("```", "").strip()
+                intent = json.loads(raw)
+                logger.info(f"Claude intent: {intent}")
+                return intent
+    except Exception as e:
+        logger.error(f"Claude intent parsing failed: {e}, falling back to rule-based")
+        return intent_parser.parse(text)
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -70,10 +133,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/standings [liga] — Tabla de posiciones\n"
         "/top [liga] — Goleadores\n"
         "/help — Esta ayuda\n\n"
-        "También puedes escribir en lenguaje natural:\n"
-        "• `¿Qué partidos están en vivo en el minuto 80?`\n"
-        "• `¿Cómo va el Chelsea vs Arsenal?`\n"
-        "• `Goles sobre el final jornada 5 Premier League`\n"
+        "Escribe en lenguaje natural:\n"
+        "• `¿Qué partidos se juegan hoy en Europa?`\n"
+        "• `¿Cómo quedó el clásico?`\n"
+        "• `Cuántos goles cayeron al final en la fecha 6 de Chile`\n"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -165,9 +228,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_text:
         return
     logger.info(f"Message from {chat_id}: {user_text}")
-    intent = intent_parser.parse(user_text)
+
+    # Use Claude to parse intent
+    intent = await parse_intent_with_claude(user_text)
     logger.info(f"Detected intent: {intent}")
+
     await update.message.reply_text("⏳ Consultando datos...")
+
     try:
         if intent["type"] == "late_goals":
             league_query = intent.get("league", "")
